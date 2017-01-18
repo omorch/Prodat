@@ -1,0 +1,288 @@
+﻿REFERENCE ASSEMBLY [Newtonsoft.Json];
+REFERENCE ASSEMBLY [Microsoft.Analytics.Samples.Formats];
+REFERENCE ASSEMBLY [HafslundCommon];
+
+//Inputfiler
+DECLARE EXTERNAL @inputProdats string = "/HafslundStrom/Input/HafslundStromContext/Prodats.json";
+DECLARE EXTERNAL @inputProdatCustomer string = "/HafslundStrom/Input/HafslundStromContext/ProdatCustomers.json";
+DECLARE EXTERNAL @inputProdatMeterpoints string = "/HafslundStrom/Input/HafslundStromContext/ProdatMeterpoints.json";
+DECLARE EXTERNAL @inputProdatMessageTypeDescription string = "/HafslundStrom/ReferenceData/ProdatMessageTypeDescription.csv";
+DECLARE EXTERNAL @inputProdatZTypeDescription string = "/HafslundStrom/ReferenceData/ProdatZTypeDescription.csv";
+
+//Outputfil
+DECLARE EXTERNAL @outProdat string = "/HafslundStrom/Staging/Prodat.csv";
+
+//Les inn Prodats (1)
+@inProdatsFile = 
+    EXTRACT jsonString string 
+    FROM @inputProdats
+    USING Extractors.Text(delimiter:'\b', quoting:false);
+
+@jsonifyProdats = 
+    SELECT Microsoft.Analytics.Samples.Formats.Json.JsonFunctions.JsonTuple(jsonString) AS recProdats
+    FROM @inProdatsFile;
+
+@InProdatsJSON =
+SELECT
+recProdats["Id"] AS Id,
+recProdats["Messagetype"] AS Messagetype,
+recProdats["MeterPointId"] AS MeterPointId,
+recProdats["Ztype"] AS Ztype,
+recProdats["Customer_Id"] AS Customer_Id
+FROM @jsonifyProdats;
+
+@InProdats =
+SELECT (int) Int32.Parse(Id) AS ProdatsIdSource,
+          Messagetype,
+          Int32.Parse(MeterPointId == null ? "-1" : MeterPointId) AS ProdatMeterPointIdSource,
+          Ztype,
+          Int32.Parse(Customer_Id == null ? "-1" : Customer_Id) AS ProdatCustomerIdSource       
+FROM @InProdatsJSON;
+
+//Les inn ProdatCustomer (2)
+@inProdatCustomerFile = 
+    EXTRACT jsonString string 
+    FROM @inputProdatCustomer
+    USING Extractors.Text(delimiter:'\b', quoting:false);
+
+@jsonifyProdatCustomer = 
+    SELECT Microsoft.Analytics.Samples.Formats.Json.JsonFunctions.JsonTuple(jsonString) AS recProdatCustomer
+    FROM @inProdatCustomerFile;
+
+@InProdatCustomerJSON =
+SELECT
+recProdatCustomer["Id"] AS Id,
+recProdatCustomer["FullName"] AS FullName,
+recProdatCustomer["BirthDate"] AS BirthDate
+FROM @jsonifyProdatCustomer;
+
+@InProdatCustomer =
+SELECT (int) Int32.Parse(Id) AS ProdatCustomerIdSource,
+          FullName,
+          DateTime.Parse(BirthDate == null ? "1800-01-01 00:00:00" : BirthDate) AS BirthDate
+FROM @InProdatCustomerJSON;
+
+//Les inn ProdatMeterpoints (3)
+@inProdatMeterpointsFile = 
+    EXTRACT jsonString string 
+    FROM @inputProdatMeterpoints
+    USING Extractors.Text(delimiter:'\b', quoting:false);
+
+@jsonifyProdatMeterpoints = 
+    SELECT Microsoft.Analytics.Samples.Formats.Json.JsonFunctions.JsonTuple(jsonString) AS recProdatMeterpoints
+    FROM @inProdatMeterpointsFile;
+
+@InProdatMeterpointsJSON =
+SELECT
+recProdatMeterpoints["Id"] AS Id,
+recProdatMeterpoints["MeterpointId"] AS MeterpointId
+FROM @jsonifyProdatMeterpoints;
+
+@InProdatMeterpoints =
+SELECT (int) Int32.Parse(Id) AS ProdatMeterPointsIdSource,
+          //Int64.Parse(MeterpointId == null ? "-1" : MeterpointId) AS MeterpointIdSource
+          MeterpointId AS MeterpointIdSource
+FROM @InProdatMeterpointsJSON;
+
+//Les inn ProdatMessageTypeDescription (4)
+@inProdatMessageTypeFile = 
+    EXTRACT MessageType string,
+            Description string
+    FROM @inputProdatMessageTypeDescription
+    USING Extractors.Text(delimiter:';', skipFirstNRows: 1);
+/*
+@jsonifyProdatMessageType = 
+    SELECT Microsoft.Analytics.Samples.Formats.Json.JsonFunctions.JsonTuple(jsonString) AS recProdatMessageType
+    FROM @inProdatMessageTypeFile;
+
+@InProdatMessageTypeJSON =
+SELECT
+recProdatMessageType["MessageType"] AS MessageType,
+recProdatMessageType["Description"] AS Description
+FROM @jsonifyProdatMessageType;
+*/
+@InProdatMessageType =
+SELECT  MessageType AS Messagetype,
+          Description AS MessagetypeDescription
+FROM @inProdatMessageTypeFile;
+
+//Les inn ProdatZTypeDescription (5)
+@inProdatZTypeFile = 
+    EXTRACT ZType string,
+            Description string
+    FROM @inputProdatZTypeDescription
+    USING Extractors.Text(delimiter:';', skipFirstNRows: 1);
+/*
+@jsonifyProdatZType = 
+    SELECT Microsoft.Analytics.Samples.Formats.Json.JsonFunctions.JsonTuple(jsonString) AS recProdatZType
+    FROM @inProdatZTypeFile;
+
+@InProdatZTypeJSON =
+SELECT
+recProdatZType["ZType"] AS ZType,
+recProdatZType["Description"] AS Description
+FROM @jsonifyProdatZType;
+*/
+@InProdatZType =
+SELECT  ZType AS Ztype,
+          Description AS ZtypeDescription
+FROM @inProdatZTypeFile;
+
+// JOIN
+@Prodats =
+    SELECT ROW_NUMBER() OVER() AS HAIProdatsId,
+       pr.ProdatsIdSource,
+       pr.Messagetype,
+       mt.MessagetypeDescription,
+       pm.MeterpointIdSource,
+       pr.Ztype,
+       zt.ZtypeDescription,
+       pc.ProdatCustomerIdSource,
+       pc.FullName,
+       pc.BirthDate,
+       DateTime.UtcNow.AddHours(2) AS DataLakeCreatedDate,
+       DateTime.UtcNow.AddHours(2) AS DataLakeUpdatedDate,
+       "Vite Context DB" AS DataSource,
+  
+
+ HafslundCommon.Functions.CreateMD5 (pr.ProdatsIdSource + pr.Messagetype + pm.MeterpointIdSource + 
+                           pr.Ztype + pc.ProdatCustomerIdSource + pc.FullName + 
+                           pc.BirthDate)
+                           AS Checksum
+                
+FROM @InProdats AS pr
+       
+       LEFT OUTER JOIN
+       @InProdatCustomer AS pc
+       ON pr.ProdatCustomerIdSource == pc.ProdatCustomerIdSource
+       
+       LEFT OUTER JOIN
+       @InProdatMeterpoints AS pm
+       ON pr.ProdatMeterPointIdSource == pm.ProdatMeterPointsIdSource
+       
+       LEFT OUTER JOIN
+       @InProdatMessageType AS mt
+       ON pr.Messagetype == mt.Messagetype
+
+       LEFT OUTER JOIN
+       @InProdatZType AS zt
+       ON pr.Ztype == zt.Ztype;
+ 
+//DROP TABLE IF EXISTS Prodats;
+
+//CREATE TABLE IF NOT EXISTS Prodats  (  
+//       INDEX [idx_Prodats] CLUSTERED (HAIProdatsId ASC)   
+//       PARTITIONED BY HASH (HAIProdatsId))   
+//       AS SELECT * FROM @Prodats; 
+
+// HISTORISERING 
+
+@DataH = SELECT * FROM Prodats; 
+
+@DataU = SELECT * FROM @DataH AS h 
+             
+             LEFT ANTISEMIJOIN @Prodats AS pr
+             ON h.ProdatsIdSource == pr.ProdatsIdSource
+             AND h.DataSource == pr.DataSource; 
+
+@DataN =
+    SELECT ROW_NUMBER() OVER() AS HAIProdatsId,
+       pr.ProdatsIdSource,
+       pr.Messagetype,
+       pr.MessagetypeDescription,
+       pr.MeterpointIdSource,
+       pr.Ztype,
+       pr.ZtypeDescription,
+       pr.ProdatCustomerIdSource,
+       pr.FullName,
+       pr.BirthDate,
+       pr.DataLakeCreatedDate,
+       pr.DataLakeUpdatedDate,
+       pr.DataSource,
+       pr.Checksum,
+       1 AS Join
+       
+       FROM @Prodats AS pr
+            
+         LEFT ANTISEMIJOIN
+             @DataH AS h
+         ON h.ProdatsIdSource == pr.ProdatsIdSource
+            AND h.DataSource == pr.DataSource;                  
+
+@MaxNokkel =
+    SELECT 1 AS Join,
+           MAX(HAIProdatsId) AS MaxNokkel
+    FROM Prodats;
+
+
+@DataN2 =
+    SELECT HAIProdatsId + (MaxNokkel == null? 0 : MaxNokkel) AS HAIProdatsId, 
+       pr.ProdatsIdSource,
+       pr.Messagetype,
+       pr.MessagetypeDescription,
+       pr.MeterpointIdSource,
+       pr.Ztype,
+       pr.ZtypeDescription,
+       pr.ProdatCustomerIdSource,
+       pr.FullName,
+       pr.BirthDate,
+       pr.DataLakeCreatedDate,
+       pr.DataLakeUpdatedDate,
+       pr.DataSource,
+       pr.Checksum
+
+    FROM @DataN AS pr
+         JOIN
+             @MaxNokkel AS m
+         ON pr.Join == m.Join;
+
+@DataPE =
+    SELECT h.HAIProdatsId,
+       pr.ProdatsIdSource,
+       pr.Messagetype,
+       pr.MessagetypeDescription,
+       pr.MeterpointIdSource,
+       pr.Ztype,
+       pr.ZtypeDescription,
+       pr.ProdatCustomerIdSource,
+       pr.FullName,
+       pr.BirthDate,
+       h.DataLakeCreatedDate AS DataLakeCreatedDate,
+       pr.Checksum == h.Checksum? h.DataLakeUpdatedDate : pr.DataLakeUpdatedDate AS DataLakeUpdatedDate,
+       pr.DataSource,
+       pr.Checksum
+       
+                
+    FROM @Prodats AS pr
+         INNER JOIN
+             @DataH AS h
+         ON h.ProdatsIdSource == pr.ProdatsIdSource AND h.DataSource == pr.DataSource;
+
+@DataA = 
+    SELECT *
+    FROM @DataN2
+    UNION ALL
+    
+    SELECT *
+    FROM @DataU
+    UNION ALL
+    
+    SELECT *
+    FROM @DataPE;
+
+//Tøm tabell
+TRUNCATE TABLE Prodats;
+
+//last tabell på nytt
+INSERT INTO Prodats
+SELECT *
+FROM @DataA;
+
+ 
+OUTPUT @Prodats
+    TO @outProdat
+    USING Outputters.Csv(outputHeader: true);
+
+
+       
+
